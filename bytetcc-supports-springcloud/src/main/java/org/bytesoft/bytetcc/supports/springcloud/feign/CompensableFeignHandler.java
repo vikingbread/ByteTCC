@@ -17,34 +17,27 @@ package org.bytesoft.bytetcc.supports.springcloud.feign;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
 
 import org.bytesoft.bytejta.supports.rpc.TransactionRequestImpl;
-import org.bytesoft.bytejta.supports.wire.RemoteCoordinator;
+import org.bytesoft.bytejta.supports.rpc.TransactionResponseImpl;
 import org.bytesoft.bytetcc.CompensableTransactionImpl;
 import org.bytesoft.bytetcc.supports.springcloud.SpringCloudBeanRegistry;
 import org.bytesoft.bytetcc.supports.springcloud.loadbalancer.CompensableLoadBalancerInterceptor;
-import org.bytesoft.bytetcc.supports.springcloud.rpc.TransactionResponseImpl;
-import org.bytesoft.common.utils.CommonUtils;
 import org.bytesoft.compensable.CompensableBeanFactory;
 import org.bytesoft.compensable.CompensableManager;
 import org.bytesoft.compensable.TransactionContext;
-import org.bytesoft.transaction.archive.XAResourceArchive;
+import org.bytesoft.transaction.remote.RemoteCoordinator;
 import org.bytesoft.transaction.supports.rpc.TransactionInterceptor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.netflix.appinfo.InstanceInfo;
 import com.netflix.loadbalancer.Server;
-import com.netflix.loadbalancer.Server.MetaInfo;
-import com.netflix.niws.loadbalancer.DiscoveryEnabledServer;
 
 public class CompensableFeignHandler implements InvocationHandler {
 	static final Logger logger = LoggerFactory.getLogger(CompensableFeignHandler.class);
 
 	private InvocationHandler delegate;
+	private volatile boolean statefully;
 
 	public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
 		if (Object.class.equals(method.getDeclaringClass())) {
@@ -55,7 +48,7 @@ public class CompensableFeignHandler implements InvocationHandler {
 			CompensableManager compensableManager = beanFactory.getCompensableManager();
 			final TransactionInterceptor transactionInterceptor = beanFactory.getTransactionInterceptor();
 
-			CompensableTransactionImpl compensable = //
+			final CompensableTransactionImpl compensable = //
 					(CompensableTransactionImpl) compensableManager.getCompensableTransactionQuietly();
 			if (compensable == null) {
 				return this.delegate.invoke(proxy, method, args);
@@ -69,54 +62,7 @@ public class CompensableFeignHandler implements InvocationHandler {
 			final TransactionRequestImpl request = new TransactionRequestImpl();
 			final TransactionResponseImpl response = new TransactionResponseImpl();
 
-			final Map<String, XAResourceArchive> participants = compensable.getParticipantArchiveMap();
-			beanRegistry.setLoadBalancerInterceptor(new CompensableLoadBalancerInterceptor() {
-				public List<Server> beforeCompletion(List<Server> servers) {
-					final List<Server> readyServerList = new ArrayList<Server>();
-					final List<Server> unReadyServerList = new ArrayList<Server>();
-
-					for (int i = 0; servers != null && i < servers.size(); i++) {
-						Server server = servers.get(i);
-
-						// String instanceId = metaInfo.getInstanceId();
-						String instanceId = null;
-
-						if (DiscoveryEnabledServer.class.isInstance(server)) {
-							DiscoveryEnabledServer discoveryEnabledServer = (DiscoveryEnabledServer) server;
-							InstanceInfo instanceInfo = discoveryEnabledServer.getInstanceInfo();
-							String addr = instanceInfo.getIPAddr();
-							String appName = instanceInfo.getAppName();
-							int port = instanceInfo.getPort();
-
-							instanceId = String.format("%s:%s:%s", addr, appName, port);
-						} else {
-							MetaInfo metaInfo = server.getMetaInfo();
-
-							String host = server.getHost();
-							String addr = host.matches("\\d+(\\.\\d+){3}") ? host : CommonUtils.getInetAddress(host);
-							String appName = metaInfo.getAppName();
-							int port = server.getPort();
-							instanceId = String.format("%s:%s:%s", addr, appName, port);
-						}
-
-						if (participants.containsKey(instanceId)) {
-							List<Server> serverList = new ArrayList<Server>();
-							serverList.add(server);
-							return serverList;
-						} // end-if (participants.containsKey(instanceId))
-
-						if (server.isReadyToServe()) {
-							readyServerList.add(server);
-						} else {
-							unReadyServerList.add(server);
-						}
-
-					}
-
-					logger.warn("There is no suitable server: expect= {}, actual= {}!", participants.keySet(), servers);
-					return readyServerList.isEmpty() ? unReadyServerList : readyServerList;
-				}
-
+			beanRegistry.setLoadBalancerInterceptor(new CompensableLoadBalancerInterceptor(this.statefully) {
 				public void afterCompletion(Server server) {
 					beanRegistry.removeLoadBalancerInterceptor();
 
@@ -129,26 +75,7 @@ public class CompensableFeignHandler implements InvocationHandler {
 					// TransactionRequestImpl request = new TransactionRequestImpl();
 					request.setTransactionContext(transactionContext);
 
-					// String instanceId = metaInfo.getInstanceId();
-					String instanceId = null;
-
-					if (DiscoveryEnabledServer.class.isInstance(server)) {
-						DiscoveryEnabledServer discoveryEnabledServer = (DiscoveryEnabledServer) server;
-						InstanceInfo instanceInfo = discoveryEnabledServer.getInstanceInfo();
-						String addr = instanceInfo.getIPAddr();
-						String appName = instanceInfo.getAppName();
-						int port = instanceInfo.getPort();
-
-						instanceId = String.format("%s:%s:%s", addr, appName, port);
-					} else {
-						MetaInfo metaInfo = server.getMetaInfo();
-
-						String host = server.getHost();
-						String addr = host.matches("\\d+(\\.\\d+){3}") ? host : CommonUtils.getInetAddress(host);
-						String appName = metaInfo.getAppName();
-						int port = server.getPort();
-						instanceId = String.format("%s:%s:%s", addr, appName, port);
-					}
+					String instanceId = this.getInstanceId(server);
 
 					RemoteCoordinator coordinator = beanRegistry.getConsumeCoordinator(instanceId);
 					request.setTargetTransactionCoordinator(coordinator);
@@ -160,7 +87,8 @@ public class CompensableFeignHandler implements InvocationHandler {
 			try {
 				return this.delegate.invoke(proxy, method, args);
 			} finally {
-				if (response.isIntercepted() == false) {
+				Object interceptedValue = response.getHeader(TransactionInterceptor.class.getName());
+				if (Boolean.valueOf(String.valueOf(interceptedValue)) == false) {
 					response.setTransactionContext(transactionContext);
 
 					RemoteCoordinator coordinator = request.getTargetTransactionCoordinator();
@@ -172,6 +100,14 @@ public class CompensableFeignHandler implements InvocationHandler {
 			}
 
 		}
+	}
+
+	public boolean isStatefully() {
+		return statefully;
+	}
+
+	public void setStatefully(boolean statefully) {
+		this.statefully = statefully;
 	}
 
 	public InvocationHandler getDelegate() {

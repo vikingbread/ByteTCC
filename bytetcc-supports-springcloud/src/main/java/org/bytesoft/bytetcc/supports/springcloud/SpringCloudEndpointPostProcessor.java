@@ -18,25 +18,40 @@ package org.bytesoft.bytetcc.supports.springcloud;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.apache.commons.lang3.StringUtils;
 import org.bytesoft.common.utils.CommonUtils;
 import org.bytesoft.compensable.aware.CompensableEndpointAware;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.MutablePropertyValues;
+import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
+import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.context.EnvironmentAware;
 import org.springframework.core.env.Environment;
 
-public class SpringCloudEndpointPostProcessor implements BeanFactoryPostProcessor, EnvironmentAware {
+public class SpringCloudEndpointPostProcessor
+		implements InitializingBean, BeanFactoryPostProcessor, BeanPostProcessor, EnvironmentAware {
 	static final Logger logger = LoggerFactory.getLogger(SpringCloudEndpointPostProcessor.class);
 
 	private Environment environment;
+	private String identifier;
 
-	public void setEnvironment(Environment environment) {
-		this.environment = environment;
+	public void afterPropertiesSet() throws Exception {
+		this.initializeEndpointIfNecessary();
+	}
+
+	public Object postProcessBeforeInitialization(Object bean, String beanName) throws BeansException {
+		this.injectEndpointIfNecessary(bean);
+		return bean;
+	}
+
+	public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
+		this.injectEndpointIfNecessary(bean);
+		return bean;
 	}
 
 	public void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactory) throws BeansException {
@@ -62,17 +77,37 @@ public class SpringCloudEndpointPostProcessor implements BeanFactoryPostProcesso
 			}
 		}
 
-		String host = CommonUtils.getInetAddress();
-		String name = this.environment.getProperty("spring.application.name");
-		String port = this.environment.getProperty("server.port");
-		String identifier = String.format("%s:%s:%s", host, name, port);
+		this.initializeEndpointIfNecessary();
 
 		for (int i = 0; i < beanDefList.size(); i++) {
 			BeanDefinition beanDef = beanDefList.get(i);
 			MutablePropertyValues mpv = beanDef.getPropertyValues();
-			mpv.addPropertyValue(CompensableEndpointAware.ENDPOINT_FIELD_NAME, identifier);
+			mpv.addPropertyValue(CompensableEndpointAware.ENDPOINT_FIELD_NAME, this.identifier);
 		}
 
+	}
+
+	private void injectEndpointIfNecessary(Object bean) {
+		if (CompensableEndpointAware.class.isInstance(bean)) {
+			CompensableEndpointAware aware = (CompensableEndpointAware) bean;
+			if (StringUtils.isBlank(aware.getEndpoint())) {
+				initializeEndpointIfNecessary();
+				aware.setEndpoint(identifier);
+			} // end-if (StringUtils.isBlank(aware.getEndpoint()))
+		} // end-if (CompensableEndpointAware.class.isInstance(bean))
+	}
+
+	public void initializeEndpointIfNecessary() {
+		if (StringUtils.isBlank(this.identifier)) {
+			String host = CommonUtils.getInetAddress();
+			String name = this.environment.getProperty("spring.application.name");
+			String port = this.environment.getProperty("server.port");
+			this.identifier = String.format("%s:%s:%s", host, name, port);
+		}
+	}
+
+	public void setEnvironment(Environment environment) {
+		this.environment = environment;
 	}
 
 }

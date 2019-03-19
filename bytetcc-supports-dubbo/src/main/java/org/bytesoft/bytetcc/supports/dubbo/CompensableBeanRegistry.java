@@ -15,19 +15,22 @@
  */
 package org.bytesoft.bytetcc.supports.dubbo;
 
-import org.bytesoft.bytejta.supports.dubbo.TransactionBeanRegistry;
-import org.bytesoft.bytejta.supports.wire.RemoteCoordinator;
 import org.bytesoft.compensable.CompensableBeanFactory;
 import org.bytesoft.compensable.aware.CompensableBeanFactoryAware;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.NoSuchBeanDefinitionException;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.ApplicationContextAware;
 import org.springframework.context.EnvironmentAware;
 import org.springframework.core.env.Environment;
 
-public final class CompensableBeanRegistry implements CompensableBeanFactoryAware, EnvironmentAware {
+public final class CompensableBeanRegistry implements CompensableBeanFactoryAware, ApplicationContextAware, EnvironmentAware {
 	static final Logger logger = LoggerFactory.getLogger(CompensableBeanRegistry.class);
 	private static final CompensableBeanRegistry instance = new CompensableBeanRegistry();
 
+	private ApplicationContext applicationContext;
 	private Environment environment;
 	@javax.inject.Inject
 	private CompensableBeanFactory beanFactory;
@@ -42,14 +45,12 @@ public final class CompensableBeanRegistry implements CompensableBeanFactoryAwar
 		return instance;
 	}
 
-	public RemoteCoordinator getConsumeCoordinator() {
-		TransactionBeanRegistry transactionBeanRegistry = TransactionBeanRegistry.getInstance();
-		return transactionBeanRegistry.getConsumeCoordinator();
-	}
-
-	public void setConsumeCoordinator(RemoteCoordinator consumeCoordinator) {
-		TransactionBeanRegistry transactionBeanRegistry = TransactionBeanRegistry.getInstance();
-		transactionBeanRegistry.setConsumeCoordinator(consumeCoordinator);
+	public <T> T getBean(Class<T> requiredType) {
+		try {
+			return this.applicationContext.getBean(requiredType);
+		} catch (NoSuchBeanDefinitionException error) {
+			return null; // ignore
+		}
 	}
 
 	public Environment getEnvironment() {
@@ -66,6 +67,10 @@ public final class CompensableBeanRegistry implements CompensableBeanFactoryAwar
 
 	public CompensableBeanFactory getBeanFactory() {
 		return beanFactory;
+	}
+
+	public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
+		this.applicationContext = applicationContext;
 	}
 
 }

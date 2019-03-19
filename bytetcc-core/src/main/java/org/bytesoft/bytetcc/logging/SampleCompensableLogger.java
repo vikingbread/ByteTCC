@@ -83,7 +83,7 @@ public class SampleCompensableLogger extends VirtualLoggingSystemImpl
 		}
 	}
 
-	public void createCoordinator(XAResourceArchive archive) {
+	public void createParticipant(XAResourceArchive archive) {
 		ArchiveDeserializer deserializer = this.beanFactory.getArchiveDeserializer();
 
 		try {
@@ -94,7 +94,7 @@ public class SampleCompensableLogger extends VirtualLoggingSystemImpl
 		}
 	}
 
-	public void updateCoordinator(XAResourceArchive archive) {
+	public void updateParticipant(XAResourceArchive archive) {
 		ArchiveDeserializer deserializer = this.beanFactory.getArchiveDeserializer();
 
 		try {
@@ -103,6 +103,9 @@ public class SampleCompensableLogger extends VirtualLoggingSystemImpl
 		} catch (RuntimeException rex) {
 			logger.error("Error occurred while modifying resource-archive.", rex);
 		}
+	}
+
+	public void deleteParticipant(XAResourceArchive archive) {
 	}
 
 	public void createCompensable(CompensableArchive archive) {
@@ -340,7 +343,7 @@ public class SampleCompensableLogger extends VirtualLoggingSystemImpl
 
 	public File getDefaultDirectory() {
 		String address = StringUtils.trimToEmpty(this.endpoint);
-		File directory = new File(String.format("bytetcc/%s", address.replaceAll("[^a-zA-Z_0-9]", "_")));
+		File directory = new File(String.format("bytetcc/%s", address.replaceAll("\\W", "_")));
 		if (directory.exists() == false) {
 			try {
 				directory.mkdirs();
@@ -352,11 +355,11 @@ public class SampleCompensableLogger extends VirtualLoggingSystemImpl
 	}
 
 	public int getMajorVersion() {
-		return 0;
+		return 1;
 	}
 
 	public int getMinorVersion() {
-		return 2;
+		return 0;
 	}
 
 	public String getLoggingFilePrefix() {
@@ -367,8 +370,16 @@ public class SampleCompensableLogger extends VirtualLoggingSystemImpl
 		return "org.bytesoft.bytetcc.logging.sample";
 	}
 
+	public CompensableBeanFactory getBeanFactory() {
+		return this.beanFactory;
+	}
+
 	public void setBeanFactory(CompensableBeanFactory tbf) {
 		this.beanFactory = tbf;
+	}
+
+	public String getEndpoint() {
+		return this.endpoint;
 	}
 
 	public void setEndpoint(String endpoint) {

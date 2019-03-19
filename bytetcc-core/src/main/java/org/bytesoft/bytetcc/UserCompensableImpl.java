@@ -29,15 +29,17 @@ import javax.transaction.xa.XAException;
 import javax.transaction.xa.XAResource;
 import javax.transaction.xa.Xid;
 
-import org.bytesoft.bytejta.supports.wire.RemoteCoordinator;
 import org.bytesoft.compensable.CompensableBeanFactory;
 import org.bytesoft.compensable.CompensableManager;
 import org.bytesoft.compensable.CompensableTransaction;
 import org.bytesoft.compensable.TransactionContext;
 import org.bytesoft.compensable.UserCompensable;
 import org.bytesoft.compensable.aware.CompensableBeanFactoryAware;
+import org.bytesoft.transaction.TransactionException;
 import org.bytesoft.transaction.TransactionManager;
+import org.bytesoft.transaction.TransactionParticipant;
 import org.bytesoft.transaction.TransactionRepository;
+import org.bytesoft.transaction.remote.RemoteCoordinator;
 import org.bytesoft.transaction.xa.TransactionXid;
 import org.bytesoft.transaction.xa.XidFactory;
 import org.slf4j.Logger;
@@ -51,13 +53,13 @@ public class UserCompensableImpl implements UserCompensable, Referenceable, Seri
 	private TransactionManager transactionManager;
 	@javax.inject.Inject
 	private CompensableBeanFactory beanFactory;
+	private transient boolean statefully;
 
 	public TransactionXid compensableBegin() throws NotSupportedException, SystemException {
-		RemoteCoordinator compensableCoordinator = this.beanFactory.getCompensableCoordinator();
+		RemoteCoordinator compensableCoordinator = (RemoteCoordinator) this.beanFactory.getCompensableNativeParticipant();
 		CompensableManager tompensableManager = this.beanFactory.getCompensableManager();
 		XidFactory compensableXidFactory = this.beanFactory.getCompensableXidFactory();
 
-		TransactionContext compensableContext = new TransactionContext();
 		CompensableTransactionImpl compensable = (CompensableTransactionImpl) tompensableManager
 				.getCompensableTransactionQuietly();
 		if (compensable != null) {
@@ -65,9 +67,12 @@ public class UserCompensableImpl implements UserCompensable, Referenceable, Seri
 		}
 
 		TransactionXid compensableXid = compensableXidFactory.createGlobalXid();
+
+		TransactionContext compensableContext = new TransactionContext();
 		compensableContext.setCoordinator(true);
 		compensableContext.setPropagated(true);
 		compensableContext.setCompensable(true);
+		compensableContext.setStatefully(this.statefully);
 		compensableContext.setXid(compensableXid);
 		compensableContext.setPropagatedBy(compensableCoordinator.getIdentifier());
 		compensable = new CompensableTransactionImpl(compensableContext);
@@ -104,7 +109,7 @@ public class UserCompensableImpl implements UserCompensable, Referenceable, Seri
 			throw new IllegalStateException();
 		}
 
-		RemoteCoordinator compensableCoordinator = this.beanFactory.getCompensableCoordinator();
+		TransactionParticipant compensableCoordinator = this.beanFactory.getCompensableNativeParticipant();
 
 		TransactionContext compensableContext = compensable.getTransactionContext();
 		try {
@@ -118,7 +123,7 @@ public class UserCompensableImpl implements UserCompensable, Referenceable, Seri
 	public void compensableRecoveryResume(Xid xid) throws NotSupportedException, SystemException {
 		CompensableManager compensableManager = this.beanFactory.getCompensableManager();
 		TransactionRepository transactionRepository = this.beanFactory.getCompensableRepository();
-		RemoteCoordinator compensableCoordinator = this.beanFactory.getCompensableCoordinator();
+		TransactionParticipant compensableCoordinator = this.beanFactory.getCompensableNativeParticipant();
 		if (xid == null) {
 			throw new IllegalStateException();
 		} else if (TransactionXid.class.isInstance(xid) == false) {
@@ -128,7 +133,14 @@ public class UserCompensableImpl implements UserCompensable, Referenceable, Seri
 		}
 
 		TransactionXid compensableXid = (TransactionXid) xid;
-		CompensableTransaction transaction = (CompensableTransaction) transactionRepository.getTransaction(compensableXid);
+		CompensableTransaction transaction = null;
+		try {
+			transaction = (CompensableTransaction) transactionRepository.getTransaction(compensableXid);
+		} catch (TransactionException tex) {
+			logger.error("Error occurred while getting transaction from transaction repository!", tex);
+			throw new IllegalStateException();
+		}
+
 		if (transaction == null) {
 			throw new IllegalStateException();
 		} else if (CompensableTransaction.class.isInstance(transaction) == false) {
@@ -189,7 +201,7 @@ public class UserCompensableImpl implements UserCompensable, Referenceable, Seri
 
 	private void invokeCompensableCommit(CompensableTransaction compensable) throws RollbackException, HeuristicMixedException,
 			HeuristicRollbackException, SecurityException, IllegalStateException, SystemException {
-		RemoteCoordinator compensableCoordinator = this.beanFactory.getCompensableCoordinator();
+		TransactionParticipant compensableCoordinator = this.beanFactory.getCompensableNativeParticipant();
 
 		TransactionContext compensableContext = compensable.getTransactionContext();
 		try {
@@ -224,7 +236,7 @@ public class UserCompensableImpl implements UserCompensable, Referenceable, Seri
 			case XAException.XAER_RMERR:
 			case XAException.XAER_RMFAIL:
 			default:
-				SystemException systemEx = new SystemException();
+				SystemException systemEx = new SystemException(xaex.errorCode);
 				systemEx.initCause(xaex);
 				throw systemEx;
 			}
@@ -271,7 +283,7 @@ public class UserCompensableImpl implements UserCompensable, Referenceable, Seri
 
 	private void invokeCompensableRollback(CompensableTransaction compensable)
 			throws IllegalStateException, SecurityException, SystemException {
-		RemoteCoordinator compensableCoordinator = this.beanFactory.getCompensableCoordinator();
+		TransactionParticipant compensableCoordinator = this.beanFactory.getCompensableNativeParticipant();
 		TransactionContext compensableContext = compensable.getTransactionContext();
 
 		try {
@@ -298,7 +310,7 @@ public class UserCompensableImpl implements UserCompensable, Referenceable, Seri
 			case XAException.XAER_RMERR:
 			case XAException.XAER_RMFAIL:
 			default:
-				SystemException systemEx = new SystemException();
+				SystemException systemEx = new SystemException(xaex.errorCode);
 				systemEx.initCause(xaex);
 				throw systemEx;
 			}
@@ -325,8 +337,20 @@ public class UserCompensableImpl implements UserCompensable, Referenceable, Seri
 		throw new NamingException("Not supported yet!");
 	}
 
+	public CompensableBeanFactory getBeanFactory() {
+		return this.beanFactory;
+	}
+
 	public void setBeanFactory(CompensableBeanFactory beanFactory) {
 		this.beanFactory = beanFactory;
+	}
+
+	public boolean isStatefully() {
+		return statefully;
+	}
+
+	public void setStatefully(boolean statefully) {
+		this.statefully = statefully;
 	}
 
 	public TransactionManager getTransactionManager() {

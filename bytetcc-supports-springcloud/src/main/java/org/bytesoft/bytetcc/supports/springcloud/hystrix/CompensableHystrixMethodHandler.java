@@ -16,29 +16,22 @@
 package org.bytesoft.bytetcc.supports.springcloud.hystrix;
 
 import java.lang.reflect.Method;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 
 import org.bytesoft.bytejta.supports.rpc.TransactionRequestImpl;
-import org.bytesoft.bytejta.supports.wire.RemoteCoordinator;
+import org.bytesoft.bytejta.supports.rpc.TransactionResponseImpl;
 import org.bytesoft.bytetcc.CompensableTransactionImpl;
 import org.bytesoft.bytetcc.supports.springcloud.SpringCloudBeanRegistry;
 import org.bytesoft.bytetcc.supports.springcloud.loadbalancer.CompensableLoadBalancerInterceptor;
-import org.bytesoft.bytetcc.supports.springcloud.rpc.TransactionResponseImpl;
-import org.bytesoft.common.utils.CommonUtils;
 import org.bytesoft.compensable.CompensableBeanFactory;
 import org.bytesoft.compensable.CompensableManager;
 import org.bytesoft.compensable.TransactionContext;
-import org.bytesoft.transaction.archive.XAResourceArchive;
+import org.bytesoft.transaction.remote.RemoteCoordinator;
 import org.bytesoft.transaction.supports.rpc.TransactionInterceptor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.netflix.appinfo.InstanceInfo;
 import com.netflix.loadbalancer.Server;
-import com.netflix.loadbalancer.Server.MetaInfo;
-import com.netflix.niws.loadbalancer.DiscoveryEnabledServer;
 
 import feign.InvocationHandlerFactory.MethodHandler;
 
@@ -46,6 +39,7 @@ public class CompensableHystrixMethodHandler implements MethodHandler {
 	static final Logger logger = LoggerFactory.getLogger(CompensableHystrixMethodHandler.class);
 
 	private final Map<Method, MethodHandler> dispatch;
+	private volatile boolean statefully;
 
 	public CompensableHystrixMethodHandler(Map<Method, MethodHandler> handlerMap) {
 		this.dispatch = handlerMap;
@@ -62,7 +56,7 @@ public class CompensableHystrixMethodHandler implements MethodHandler {
 		Method method = invocation.getMethod(); // (Method) argv[1];
 		Object[] args = invocation.getArgs(); // (Object[]) argv[2];
 
-		CompensableTransactionImpl compensable = //
+		final CompensableTransactionImpl compensable = //
 				(CompensableTransactionImpl) compensableManager.getCompensableTransaction(thread);
 		if (compensable == null) {
 			return this.dispatch.get(method).invoke(args);
@@ -76,54 +70,7 @@ public class CompensableHystrixMethodHandler implements MethodHandler {
 		final TransactionRequestImpl request = new TransactionRequestImpl();
 		final TransactionResponseImpl response = new TransactionResponseImpl();
 
-		final Map<String, XAResourceArchive> participants = compensable.getParticipantArchiveMap();
-		beanRegistry.setLoadBalancerInterceptor(new CompensableLoadBalancerInterceptor() {
-			public List<Server> beforeCompletion(List<Server> servers) {
-				final List<Server> readyServerList = new ArrayList<Server>();
-				final List<Server> unReadyServerList = new ArrayList<Server>();
-
-				for (int i = 0; servers != null && i < servers.size(); i++) {
-					Server server = servers.get(i);
-
-					// String instanceId = metaInfo.getInstanceId();
-					String instanceId = null;
-
-					if (DiscoveryEnabledServer.class.isInstance(server)) {
-						DiscoveryEnabledServer discoveryEnabledServer = (DiscoveryEnabledServer) server;
-						InstanceInfo instanceInfo = discoveryEnabledServer.getInstanceInfo();
-						String addr = instanceInfo.getIPAddr();
-						String appName = instanceInfo.getAppName();
-						int port = instanceInfo.getPort();
-
-						instanceId = String.format("%s:%s:%s", addr, appName, port);
-					} else {
-						MetaInfo metaInfo = server.getMetaInfo();
-
-						String host = server.getHost();
-						String addr = host.matches("\\d+(\\.\\d+){3}") ? host : CommonUtils.getInetAddress(host);
-						String appName = metaInfo.getAppName();
-						int port = server.getPort();
-						instanceId = String.format("%s:%s:%s", addr, appName, port);
-					}
-
-					if (participants.containsKey(instanceId)) {
-						List<Server> serverList = new ArrayList<Server>();
-						serverList.add(server);
-						return serverList;
-					} // end-if (participants.containsKey(instanceId))
-
-					if (server.isReadyToServe()) {
-						readyServerList.add(server);
-					} else {
-						unReadyServerList.add(server);
-					}
-
-				}
-
-				logger.warn("There is no suitable server: expect= {}, actual= {}!", participants.keySet(), servers);
-				return readyServerList.isEmpty() ? unReadyServerList : readyServerList;
-			}
-
+		beanRegistry.setLoadBalancerInterceptor(new CompensableLoadBalancerInterceptor(this.statefully) {
 			public void afterCompletion(Server server) {
 				beanRegistry.removeLoadBalancerInterceptor();
 
@@ -135,26 +82,7 @@ public class CompensableHystrixMethodHandler implements MethodHandler {
 
 				request.setTransactionContext(transactionContext);
 
-				// String instanceId = metaInfo.getInstanceId();
-				String instanceId = null;
-
-				if (DiscoveryEnabledServer.class.isInstance(server)) {
-					DiscoveryEnabledServer discoveryEnabledServer = (DiscoveryEnabledServer) server;
-					InstanceInfo instanceInfo = discoveryEnabledServer.getInstanceInfo();
-					String addr = instanceInfo.getIPAddr();
-					String appName = instanceInfo.getAppName();
-					int port = instanceInfo.getPort();
-
-					instanceId = String.format("%s:%s:%s", addr, appName, port);
-				} else {
-					MetaInfo metaInfo = server.getMetaInfo();
-
-					String host = server.getHost();
-					String addr = host.matches("\\d+(\\.\\d+){3}") ? host : CommonUtils.getInetAddress(host);
-					String appName = metaInfo.getAppName();
-					int port = server.getPort();
-					instanceId = String.format("%s:%s:%s", addr, appName, port);
-				}
+				String instanceId = this.getInstanceId(server);
 
 				RemoteCoordinator coordinator = beanRegistry.getConsumeCoordinator(instanceId);
 				request.setTargetTransactionCoordinator(coordinator);
@@ -169,7 +97,8 @@ public class CompensableHystrixMethodHandler implements MethodHandler {
 		} finally {
 
 			try {
-				if (response.isIntercepted() == false) {
+				Object interceptedValue = response.getHeader(TransactionInterceptor.class.getName());
+				if (Boolean.valueOf(String.valueOf(interceptedValue)) == false) {
 					response.setTransactionContext(transactionContext);
 
 					RemoteCoordinator coordinator = request.getTargetTransactionCoordinator();
@@ -184,6 +113,14 @@ public class CompensableHystrixMethodHandler implements MethodHandler {
 
 		}
 
+	}
+
+	public boolean isStatefully() {
+		return statefully;
+	}
+
+	public void setStatefully(boolean statefully) {
+		this.statefully = statefully;
 	}
 
 	public Map<Method, MethodHandler> getDispatch() {

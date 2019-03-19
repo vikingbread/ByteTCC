@@ -15,7 +15,7 @@
  */
 package org.bytesoft.bytetcc;
 
-import org.bytesoft.bytejta.supports.wire.RemoteCoordinator;
+import org.bytesoft.bytetcc.supports.CompensableRolledbackMarker;
 import org.bytesoft.bytetcc.supports.CompensableSynchronization;
 import org.bytesoft.bytetcc.supports.resource.LocalResourceCleaner;
 import org.bytesoft.compensable.CompensableBeanFactory;
@@ -28,11 +28,13 @@ import org.bytesoft.transaction.TransactionManager;
 import org.bytesoft.transaction.TransactionRecovery;
 import org.bytesoft.transaction.TransactionRepository;
 import org.bytesoft.transaction.logging.ArchiveDeserializer;
+import org.bytesoft.transaction.remote.RemoteCoordinator;
 import org.bytesoft.transaction.supports.rpc.TransactionInterceptor;
 import org.bytesoft.transaction.supports.serialize.XAResourceDeserializer;
 import org.bytesoft.transaction.xa.XidFactory;
 
 public final class TransactionBeanFactoryImpl implements CompensableBeanFactory {
+	private static final TransactionBeanFactoryImpl instance = new TransactionBeanFactoryImpl();
 
 	private TransactionManager transactionManager;
 	private CompensableManager compensableManager;
@@ -54,6 +56,17 @@ public final class TransactionBeanFactoryImpl implements CompensableBeanFactory 
 	@javax.inject.Inject
 	private CompensableSynchronization compensableSynchronization;
 	private TransactionLock compensableLock;
+	private CompensableRolledbackMarker compensableRolledbackMarker;
+
+	private TransactionBeanFactoryImpl() {
+		if (instance != null) {
+			throw new IllegalStateException();
+		}
+	}
+
+	public static TransactionBeanFactoryImpl getInstance() {
+		return instance;
+	}
 
 	public TransactionManager getTransactionManager() {
 		return transactionManager;
@@ -135,7 +148,7 @@ public final class TransactionBeanFactoryImpl implements CompensableBeanFactory 
 		this.transactionRecovery = transactionRecovery;
 	}
 
-	public RemoteCoordinator getTransactionCoordinator() {
+	public RemoteCoordinator getTransactionNativeParticipant() {
 		return transactionCoordinator;
 	}
 
@@ -143,7 +156,7 @@ public final class TransactionBeanFactoryImpl implements CompensableBeanFactory 
 		this.transactionCoordinator = transactionCoordinator;
 	}
 
-	public RemoteCoordinator getCompensableCoordinator() {
+	public RemoteCoordinator getCompensableNativeParticipant() {
 		return compensableCoordinator;
 	}
 
@@ -205,6 +218,14 @@ public final class TransactionBeanFactoryImpl implements CompensableBeanFactory 
 
 	public void setCompensableSynchronization(CompensableSynchronization compensableSynchronization) {
 		this.compensableSynchronization = compensableSynchronization;
+	}
+
+	public CompensableRolledbackMarker getCompensableRolledbackMarker() {
+		return compensableRolledbackMarker;
+	}
+
+	public void setCompensableRolledbackMarker(CompensableRolledbackMarker compensableRolledbackMarker) {
+		this.compensableRolledbackMarker = compensableRolledbackMarker;
 	}
 
 }

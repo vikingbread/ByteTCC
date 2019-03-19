@@ -25,9 +25,13 @@ import javax.transaction.xa.XAResource;
 import javax.transaction.xa.Xid;
 
 import org.apache.commons.lang3.StringUtils;
-import org.bytesoft.bytejta.supports.wire.RemoteCoordinator;
 import org.bytesoft.common.utils.ByteUtils;
+import org.bytesoft.common.utils.CommonUtils;
 import org.bytesoft.common.utils.SerializeUtils;
+import org.bytesoft.transaction.TransactionParticipant;
+import org.bytesoft.transaction.remote.RemoteAddr;
+import org.bytesoft.transaction.remote.RemoteCoordinator;
+import org.bytesoft.transaction.remote.RemoteNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.env.Environment;
@@ -43,12 +47,16 @@ public class SpringCloudCoordinator implements InvocationHandler {
 
 	private String identifier;
 	private Environment environment;
+	private boolean statefully;
 
 	public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
 		Class<?> clazz = method.getDeclaringClass();
 		String methodName = method.getName();
+		Class<?> returnType = method.getReturnType();
 		if (Object.class.equals(clazz)) {
 			return method.invoke(this, args);
+		} else if (TransactionParticipant.class.equals(clazz)) {
+			throw new XAException(XAException.XAER_RMFAIL);
 		} else if (RemoteCoordinator.class.equals(clazz)) {
 			if ("getIdentifier".equals(methodName)) {
 				return this.identifier;
@@ -57,6 +65,10 @@ public class SpringCloudCoordinator implements InvocationHandler {
 				int lastIndex = this.identifier.lastIndexOf(":");
 				return firstIndex <= 0 || lastIndex <= 0 || firstIndex > lastIndex //
 						? null : this.identifier.subSequence(firstIndex + 1, lastIndex);
+			} else if ("getRemoteAddr".equals(methodName) && RemoteAddr.class.equals(returnType)) {
+				return this.identifier == null ? null : CommonUtils.getRemoteAddr(this.identifier);
+			} else if ("getRemoteNode".equals(methodName) && RemoteNode.class.equals(returnType)) {
+				return this.identifier == null ? null : CommonUtils.getRemoteNode(this.identifier);
 			} else {
 				throw new XAException(XAException.XAER_RMFAIL);
 			}
@@ -88,21 +100,19 @@ public class SpringCloudCoordinator implements InvocationHandler {
 			RestTemplate transactionRestTemplate = SpringCloudBeanRegistry.getInstance().getRestTemplate();
 			RestTemplate restTemplate = transactionRestTemplate == null ? new RestTemplate() : transactionRestTemplate;
 
-			StringBuilder ber = new StringBuilder();
-
-			int firstIndex = this.identifier.indexOf(":");
-			int lastIndex = this.identifier.lastIndexOf(":");
-			String prefix = firstIndex <= 0 ? null : this.identifier.substring(0, firstIndex);
-			String servId = firstIndex <= 0 || lastIndex <= 0 || firstIndex >= lastIndex //
-					? null : this.identifier.substring(firstIndex + 1, lastIndex);
-			String suffix = lastIndex <= 0 ? null : this.identifier.substring(lastIndex + 1);
-
-			String contextPathKey = String.format("%s.%s", CONSTANT_CONTENT_PATH, servId);
-			String contextPath = StringUtils.isBlank(servId) //
+			RemoteNode remoteNode = CommonUtils.getRemoteNode(this.identifier);
+			String contextPathKey = String.format("%s.%s", CONSTANT_CONTENT_PATH, remoteNode.getServiceKey());
+			String contextPath = StringUtils.isBlank(remoteNode.getServiceKey()) //
 					? null : StringUtils.trimToEmpty(this.environment.getProperty(contextPathKey));
 
+			StringBuilder ber = new StringBuilder();
 			ber.append("http://");
-			ber.append(prefix == null || suffix == null ? null : prefix + ":" + suffix);
+
+			if (this.statefully) {
+				ber.append(remoteNode.getServerHost()).append(":").append(remoteNode.getServerPort());
+			} else {
+				ber.append(remoteNode.getServiceKey());
+			}
 
 			if (StringUtils.isNotBlank(contextPath) || StringUtils.equals(contextPath, "/")) {
 				ber.append(contextPath.startsWith("/") ? "" : "/").append(contextPath);
@@ -160,21 +170,19 @@ public class SpringCloudCoordinator implements InvocationHandler {
 			RestTemplate transactionRestTemplate = SpringCloudBeanRegistry.getInstance().getRestTemplate();
 			RestTemplate restTemplate = transactionRestTemplate == null ? new RestTemplate() : transactionRestTemplate;
 
-			StringBuilder ber = new StringBuilder();
-
-			int firstIndex = this.identifier.indexOf(":");
-			int lastIndex = this.identifier.lastIndexOf(":");
-			String prefix = firstIndex <= 0 ? null : this.identifier.substring(0, firstIndex);
-			String servId = firstIndex <= 0 || lastIndex <= 0 || firstIndex >= lastIndex //
-					? null : this.identifier.substring(firstIndex + 1, lastIndex);
-			String suffix = lastIndex <= 0 ? null : this.identifier.substring(lastIndex + 1);
-
-			String contextPathKey = String.format("%s.%s", CONSTANT_CONTENT_PATH, servId);
-			String contextPath = StringUtils.isBlank(servId) //
+			RemoteNode remoteNode = CommonUtils.getRemoteNode(this.identifier);
+			String contextPathKey = String.format("%s.%s", CONSTANT_CONTENT_PATH, remoteNode.getServiceKey());
+			String contextPath = StringUtils.isBlank(remoteNode.getServiceKey()) //
 					? null : StringUtils.trimToEmpty(this.environment.getProperty(contextPathKey));
 
+			StringBuilder ber = new StringBuilder();
 			ber.append("http://");
-			ber.append(prefix == null || suffix == null ? null : prefix + ":" + suffix);
+
+			if (this.statefully) {
+				ber.append(remoteNode.getServerHost()).append(":").append(remoteNode.getServerPort());
+			} else {
+				ber.append(remoteNode.getServiceKey());
+			}
 
 			if (StringUtils.isNotBlank(contextPath) || StringUtils.equals(contextPath, "/")) {
 				ber.append(contextPath.startsWith("/") ? "" : "/").append(contextPath);
@@ -240,6 +248,10 @@ public class SpringCloudCoordinator implements InvocationHandler {
 		}
 	}
 
+	public String toString() {
+		return String.format("<remote-resource| id= %s>", this.identifier);
+	}
+
 	public String getIdentifier() {
 		return identifier;
 	}
@@ -254,6 +266,14 @@ public class SpringCloudCoordinator implements InvocationHandler {
 
 	public void setEnvironment(Environment environment) {
 		this.environment = environment;
+	}
+
+	public boolean isStatefully() {
+		return statefully;
+	}
+
+	public void setStatefully(boolean statefully) {
+		this.statefully = statefully;
 	}
 
 }
